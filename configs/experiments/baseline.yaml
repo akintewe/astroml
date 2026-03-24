@@ -1,0 +1,25 @@
+# Baseline experiment configuration
+defaults:
+  - override /model: gcn
+  - override /training: default
+  - override /data: cora
+
+# Baseline settings
+experiment:
+  name: "baseline_experiment"
+  seed: 42
+
+# Model settings
+model:
+  hidden_dims: [64, 32]
+  dropout: 0.5
+
+# Training settings
+training:
+  epochs: 200
+  lr: 0.01
+  weight_decay: 5e-4
+
+# Data settings
+data:
+  name: "Cora"
