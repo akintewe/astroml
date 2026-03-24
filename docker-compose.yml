@@ -1,0 +1,282 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: astroml-postgres
+    environment:
+      POSTGRES_DB: astroml
+      POSTGRES_USER: astroml
+      POSTGRES_PASSWORD: astroml_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    networks:
+      - astroml-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U astroml -d astroml"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis for caching and job queues
+  redis:
+    image: redis:7-alpine
+    container_name: astroml-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - astroml-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
+  # Ingestion Service
+  ingestion:
+    build:
+      context: .
+      target: ingestion
+    container_name: astroml-ingestion
+    environment:
+      - DATABASE_URL=postgresql://astroml:astroml_password@postgres:5432/astroml
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=INFO
+      - STELLAR_NETWORK_PASSPHRASE=Public Global Stellar Network ; September 2015
+    ports:
+      - "8000:8000"
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config:ro
+      - ingestion_logs:/app/logs
+      - ingestion_data:/app/data
+    networks:
+      - astroml-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["python", "-m", "astroml.ingestion"]
+
+  # Enhanced Streaming Service
+  streaming:
+    build:
+      context: .
+      target: ingestion
+    container_name: astroml-streaming
+    environment:
+      - DATABASE_URL=postgresql://astroml:astroml_password@postgres:5432/astroml
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=INFO
+      - STELLAR_HORIZON_URL=https://horizon.stellar.org
+      - STELLAR_NETWORK_PASSPHRASE=Public Global Stellar Network ; September 2015
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./config:/app/config:ro
+      - streaming_logs:/app/logs
+    networks:
+      - astroml-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["python", "-m", "astroml.ingestion.enhanced_stream"]
+
+  # Training Service (GPU-enabled)
+  training-gpu:
+    build:
+      context: .
+      target: training
+    container_name: astroml-training-gpu
+    environment:
+      - DATABASE_URL=postgresql://astroml:astroml_password@postgres:5432/astroml
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTHONPATH=/app
+    ports:
+      - "6006:6006"  # TensorBoard
+    volumes:
+      - ./config:/app/config:ro
+      - training_models:/app/models
+      - training_data:/app/data
+      - training_logs:/app/logs
+    networks:
+      - astroml-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"  # Training jobs are typically run once
+    profiles:
+      - gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Training Service (CPU-only)
+  training-cpu:
+    build:
+      context: .
+      target: training-cpu
+    container_name: astroml-training-cpu
+    environment:
+      - DATABASE_URL=postgresql://astroml:astroml_password@postgres:5432/astroml
+      - PYTHONPATH=/app
+    ports:
+      - "6007:6006"  # TensorBoard
+    volumes:
+      - ./config:/app/config:ro
+      - training_models:/app/models
+      - training_data:/app/data
+      - training_logs:/app/logs
+    networks:
+      - astroml-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    profiles:
+      - cpu
+
+  # Development Environment
+  dev:
+    build:
+      context: .
+      target: development
+    container_name: astroml-dev
+    environment:
+      - DATABASE_URL=postgresql://astroml:astroml_password@postgres:5432/astroml
+      - REDIS_URL=redis://redis:6379/0
+      - PYTHONPATH=/app
+    ports:
+      - "8002:8000"
+      - "8888:8888"  # Jupyter
+      - "6008:6006"  # TensorBoard
+    volumes:
+      - .:/app
+      - dev_logs:/app/logs
+      - dev_data:/app/data
+    networks:
+      - astroml-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - dev
+    command: ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
+
+  # Production Service
+  production:
+    build:
+      context: .
+      target: production
+    container_name: astroml-production
+    environment:
+      - DATABASE_URL=postgresql://astroml:astroml_password@postgres:5432/astroml
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=WARNING
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config:/app/config:ro
+      - production_logs:/app/logs
+      - production_data:/app/data
+    networks:
+      - astroml-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - prod
+
+  # Monitoring with Prometheus (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: astroml-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - astroml-network
+    profiles:
+      - monitoring
+    restart: unless-stopped
+
+  # Grafana for visualization (optional)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: astroml-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - astroml-network
+    depends_on:
+      - prometheus
+    profiles:
+      - monitoring
+    restart: unless-stopped
+
+networks:
+  astroml-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  ingestion_logs:
+    driver: local
+  ingestion_data:
+    driver: local
+  streaming_logs:
+    driver: local
+  training_models:
+    driver: local
+  training_data:
+    driver: local
+  training_logs:
+    driver: local
+  dev_logs:
+    driver: local
+  dev_data:
+    driver: local
+  production_logs:
+    driver: local
+  production_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
