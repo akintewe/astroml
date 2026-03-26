@@ -1,0 +1,8 @@
+_target_: astroml.models.sage_encoder.InductiveSAGEEncoder
+
+input_dim: 8
+hidden_dim: 64
+output_dim: 32
+num_layers: 2
+dropout: 0.5
+aggregator: "mean"

@@ -1,0 +1,2 @@
+fanout: [25, 10]
+batch_size: 512

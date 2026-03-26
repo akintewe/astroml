@@ -1,0 +1,13 @@
+defaults:
+  - /model: sage
+  - /training: default
+
+sampling:
+  fanout: [25, 10]
+  batch_size: 512
+
+experiment:
+  name: "inductive_sage"
+  temporal_split_ratio: 0.7
+  loss: "reconstruction"
+  svdd_mode: "embeddings_only"
